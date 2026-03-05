@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game of Life - Boundary System</title>
+    <style>
+        body {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            background-color: #0a0a0a;
+            font-family: 'Courier New', Courier, monospace;
+            position: relative;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            cursor: crosshair;
+        }
+        #canvasLeft { border-right: 2px solid rgba(255, 255, 255, 0.5); }
+        
+        .boundary-label {
+            position: absolute;
+            background: #FF5722;
+            color: #000;
+            font-size: 9px;
+            font-weight: bold;
+            padding: 1px 4px;
+            text-transform: uppercase;
+            white-space: nowrap;
+            pointer-events: auto;
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.2s;
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(0,0,0,0.3);
+            box-shadow: 0 0 10px rgba(255, 87, 34, 0.3);
+        }
+
+        .drag-rect {
+            position: absolute;
+            border: 1px dashed #fff;
+            background: rgba(255, 255, 255, 0.1);
+            pointer-events: none;
+            z-index: 100;
+        }
+        
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 10px 20px;
+            border-radius: 30px;
+            border: 1px solid #444;
+            z-index: 10;
+            backdrop-filter: blur(5px);
+        }
+        button {
+            background: #222;
+            color: #ccc;
+            border: 1px solid #444;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        button:hover { background: #333; color: #fff; border-color: #666; }
+        button.active { background: #4CAF50; color: #000; font-weight: bold; }
+
+        .viewport-title {
+            position: absolute;
+            top: 15px;
+            color: rgba(255, 255, 255, 0.2);
+            pointer-events: none;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-weight: bold;
+        }
+        #titleLeft { left: 20px; }
+        #titleRight { right: 20px; }
+    </style>
+</head>
+<body>
+    <div id="titleLeft" class="viewport-title">SYSTEM.VIEWPORT_L</div>
+    <div id="titleRight" class="viewport-title">SYSTEM.VIEWPORT_R</div>
+    <div id="dragRect" class="drag-rect" style="display: none;"></div>
+
+    <canvas id="canvasLeft"></canvas>
+    <canvas id="canvasRight"></canvas>
+
+    <div class="controls">
+        <button id="btnMode">Box Mode</button>
+        <button id="btnRandomBoth">Randomize All</button>
+        <button id="btnLink">Link Middle</button>
+        <button id="btnLog" class="active">Stop Logging</button>
+        <button id="btnPause" class="active">Running</button>
+        <button id="btnClear">Clear All</button>
+    </div>
+
+    <script>
+        const canvasL = document.getElementById('canvasLeft');
+        const canvasR = document.getElementById('canvasRight');
+        const dragRectEl = document.getElementById('dragRect');
+        const ctxL = canvasL.getContext('2d');
+        const ctxR = canvasR.getContext('2d');
+        
+        const CELL_SIZE = 10;
+        let rows, cols;
+        let gridL, gridR;
+        let isRunning = true;
+        let isDrawing = false;
+        let isLinked = false;
+        let isLogging = true;
+        let drawMode = 'box';
+
+        let boundaries = [];
+        let isDraggingViewport = false;
+        let dragStart = { x: 0, y: 0 };
+
+        function initGrids(preserve = false) {
+            const rect = canvasL.getBoundingClientRect();
+            const newCols = Math.floor(rect.width / CELL_SIZE);
+            const newRows = Math.floor(rect.height / CELL_SIZE);
+            
+            // Set internal resolution
+            canvasL.width = rect.width;
+            canvasL.height = rect.height;
+            canvasR.width = rect.width;
+            canvasR.height = rect.height;
+
+            const oldGridL = gridL;
+            const oldGridR = gridR;
+
+            gridL = Array(newCols).fill().map(() => Array(newRows).fill(0));
+            gridR = Array(newCols).fill().map(() => Array(newRows).fill(0));
+            
+            if (preserve && oldGridL && oldGridR) {
+                for(let i=0; i<Math.min(newCols, oldGridL.length); i++) {
+                    for(let j=0; j<Math.min(newRows, oldGridL[0].length); j++) {
+                        gridL[i][j] = oldGridL[i][j];
+                        gridR[i][j] = oldGridR[i][j];
+                    }
+                }
+            }
+
+            cols = newCols;
+            rows = newRows;
+        }
+
+        function randomize(grid) {
+            for (let i = 0; i < grid.length; i++) {
+                for (let j = 0; j < grid[0].length; j++) {
+                    grid[i][j] = Math.random() > 0.85 ? 1 : 0;
+                }
+            }
+        }
+
+        function draw(ctx, grid, width, height, isRight = false) {
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, width, height);
+            
+            // Subtle grid
+            ctx.strokeStyle = '#151515';
+            ctx.beginPath();
+            for (let i = 0; i <= cols; i++) {
+                ctx.moveTo(i * CELL_SIZE, 0);
+                ctx.lineTo(i * CELL_SIZE, height);
+            }
+            for (let j = 0; j <= rows; j++) {
+                ctx.moveTo(0, j * CELL_SIZE);
+                ctx.lineTo(width, j * CELL_SIZE);
+            }
+            ctx.stroke();
+
+            // Draw boundaries
+            const offset = isRight ? window.innerWidth / 2 : 0;
+            boundaries.forEach(b => {
+                const color = b.hardness === 1.0 ? '#FF5722' : '#2196F3';
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(b.x1 - offset, b.y1);
+                ctx.lineTo(b.x2 - offset, b.y2);
+                ctx.stroke();
+            });
+            ctx.lineWidth = 1;
+
+            ctx.fillStyle = '#4CAF50';
+            for (let i = 0; i < cols; i++) {
+                for (let j = 0; j < rows; j++) {
+                    if (grid[i][j]) {
+                        ctx.fillRect(i * CELL_SIZE + 1, j * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
+                    }
+                }
+            }
+        }
+
+        function isPathBlocked(x1, y1, x2, y2) {
+            const mx = (x1 + x2) / 2;
+            const my = (y1 + y2) / 2;
+            
+            for (const b of boundaries) {
+                if (b.hardness < 1.0) continue;
+                if (b.x1 === b.x2) { // Vertical
+                    if (Math.min(x1, x2) < b.x1 && Math.max(x1, x2) > b.x1) {
+                        if (my >= b.y1 && my <= b.y2) return true;
+                    }
+                } else if (b.y1 === b.y2) { // Horizontal
+                    if (Math.min(y1, y2) < b.y1 && Math.max(y1, y2) > b.y1) {
+                        if (mx >= b.x1 && mx <= b.x2) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function getNeighborValue(i, j, di, dj, grid, otherGrid, isLeft) {
+            const currentX = (isLeft ? i : i + cols) * CELL_SIZE + CELL_SIZE/2;
+            const currentY = j * CELL_SIZE + CELL_SIZE/2;
+            
+            let ni = i + di;
+            let nj = (j + dj + rows) % rows;
+            let nGrid = grid;
+            let isNeighborLeft = isLeft;
+
+            if (ni < 0 || ni >= cols) {
+                if (!isLinked) return 0;
+                nGrid = otherGrid;
+                isNeighborLeft = !isLeft;
+                ni = (ni + cols) % cols;
+            }
+
+            const neighborX = (isNeighborLeft ? ni : ni + cols) * CELL_SIZE + CELL_SIZE/2;
+            const neighborY = nj * CELL_SIZE + CELL_SIZE/2;
+
+            if (isPathBlocked(currentX, currentY, neighborX, neighborY)) return 0;
+            return nGrid[ni][nj];
+        }
+
+        function update() {
+            const nextL = gridL.map(arr => [...arr]);
+            const nextR = gridR.map(arr => [...arr]);
+            const changes = [];
+
+            for (let i = 0; i < cols; i++) {
+                for (let j = 0; j < rows; j++) {
+                    // Update Left
+                    let nL = 0;
+                    for (let di = -1; di <= 1; di++) {
+                        for (let dj = -1; dj <= 1; dj++) {
+                            if (di === 0 && dj === 0) continue;
+                            nL += getNeighborValue(i, j, di, dj, gridL, gridR, true);
+                        }
+                    }
+                    let sL = gridL[i][j];
+                    if (sL === 1) sL = (nL === 2 || nL === 3) ? 1 : 0;
+                    else sL = (nL === 3) ? 1 : 0;
+                    if (isLogging && sL !== gridL[i][j]) changes.push(`L[${i},${j}]:${gridL[i][j]}->${sL}`);
+                    nextL[i][j] = sL;
+
+                    // Update Right
+                    let nR = 0;
+                    for (let di = -1; di <= 1; di++) {
+                        for (let dj = -1; dj <= 1; dj++) {
+                            if (di === 0 && dj === 0) continue;
+                            nR += getNeighborValue(i, j, di, dj, gridR, gridL, false);
+                        }
+                    }
+                    let sR = gridR[i][j];
+                    if (sR === 1) sR = (nR === 2 || nR === 3) ? 1 : 0;
+                    else sR = (nR === 3) ? 1 : 0;
+                    if (isLogging && sR !== gridR[i][j]) changes.push(`R[${i},${j}]:${gridR[i][j]}->${sR}`);
+                    nextR[i][j] = sR;
+                }
+            }
+            if (isLogging && changes.length > 0) {
+                console.log(`Changes (${changes.length}):`, changes.slice(0, 5), changes.length > 5 ? '...' : '');
+            }
+            gridL = nextL;
+            gridR = nextR;
+        }
+
+        function loop() {
+            if (isRunning) update();
+            draw(ctxL, gridL, canvasL.width, canvasL.height, false);
+            draw(ctxR, gridR, canvasR.width, canvasR.height, true);
+            requestAnimationFrame(loop);
+        }
+
+        function createBoundary(x1, y1, x2, y2, type) {
+            const id = type + '-' + Math.random().toString(36).substr(2, 3).toUpperCase();
+            const b = { id, x1, y1, x2, y2, hardness: 1.0 };
+            
+            const label = document.createElement('div');
+            label.className = 'boundary-label';
+            label.style.left = (x1 + x2) / 2 + 'px';
+            label.style.top = (y1 + y2) / 2 + 'px';
+            label.textContent = `${id} | 1.0`;
+            document.body.appendChild(label);
+
+            label.onclick = () => {
+                b.hardness = b.hardness === 1.0 ? 0.0 : 1.0;
+                label.textContent = `${id} | ${b.hardness.toFixed(1)}`;
+                label.style.background = b.hardness === 1.0 ? '#FF5722' : '#2196F3';
+                label.style.boxShadow = b.hardness === 1.0 ? '0 0 10px rgba(255, 87, 34, 0.3)' : '0 0 10px rgba(33, 150, 243, 0.3)';
+            };
+            boundaries.push(b);
+        }
+
+        window.addEventListener('mousedown', (e) => {
+            if (e.ctrlKey) {
+                isDraggingViewport = true;
+                dragStart = { x: e.clientX, y: e.clientY };
+                dragRectEl.style.display = 'block';
+            } else {
+                isDrawing = true;
+                handleDrawing(e);
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (isDraggingViewport) {
+                let w = e.clientX - dragStart.x;
+                let h = e.clientY - dragStart.y;
+                let dx, dy, dw, dh;
+                if (drawMode === 'line') {
+                    if (Math.abs(w) > Math.abs(h)) { dw = Math.abs(w); dh = 2; dx = w > 0 ? dragStart.x : e.clientX; dy = dragStart.y; }
+                    else { dw = 2; dh = Math.abs(h); dx = dragStart.x; dy = h > 0 ? dragStart.y : e.clientY; }
+                } else {
+                    dw = Math.abs(w); dh = Math.abs(h); dx = w > 0 ? dragStart.x : e.clientX; dy = h > 0 ? dragStart.y : e.clientY;
+                }
+                dragRectEl.style.width = dw + 'px';
+                dragRectEl.style.height = dh + 'px';
+                dragRectEl.style.left = dx + 'px';
+                dragRectEl.style.top = dy + 'px';
+            } else if (isDrawing) {
+                handleDrawing(e);
+            }
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (isDraggingViewport) {
+                let x = Math.round(parseInt(dragRectEl.style.left) / CELL_SIZE) * CELL_SIZE;
+                let y = Math.round(parseInt(dragRectEl.style.top) / CELL_SIZE) * CELL_SIZE;
+                let w = Math.round(parseInt(dragRectEl.style.width) / CELL_SIZE) * CELL_SIZE;
+                let h = Math.round(parseInt(dragRectEl.style.height) / CELL_SIZE) * CELL_SIZE;
+                if (drawMode === 'box' && (w > 0 && h > 0)) {
+                    createBoundary(x, y, x + w, y, 'TOP'); createBoundary(x, y + h, x + w, y + h, 'BOT');
+                    createBoundary(x, y, x, y + h, 'LFT'); createBoundary(x + w, y, x + w, y + h, 'RGT');
+                } else if (drawMode === 'line') {
+                    if (parseInt(dragRectEl.style.width) > parseInt(dragRectEl.style.height)) createBoundary(x, y, x + w, y, 'LIN');
+                    else createBoundary(x, y, x, y + h, 'LIN');
+                }
+                dragRectEl.style.display = 'none';
+                isDraggingViewport = false;
+            }
+            isDrawing = false;
+        });
+
+        function handleDrawing(e) {
+            if (!isDrawing) return;
+            const target = e.target;
+            if (target.tagName !== 'CANVAS') return;
+            const rect = target.getBoundingClientRect();
+            const ix = Math.floor((e.clientX - rect.left) / CELL_SIZE);
+            const iy = Math.floor((e.clientY - rect.top) / CELL_SIZE);
+            const grid = target === canvasL ? gridL : gridR;
+            if (grid[ix]) grid[ix][iy] = 1;
+        }
+
+        document.getElementById('btnMode').onclick = function() {
+            drawMode = drawMode === 'box' ? 'line' : 'box';
+            this.textContent = drawMode === 'box' ? 'Box Mode' : 'Line Mode';
+            this.classList.toggle('active', drawMode === 'line');
+        };
+        document.getElementById('btnRandomBoth').onclick = () => { randomize(gridL); randomize(gridR); };
+        document.getElementById('btnClear').onclick = () => { 
+            initGrids(); 
+            document.querySelectorAll('.boundary-label').forEach(l => l.remove());
+            boundaries = [];
+        };
+        document.getElementById('btnLink').onclick = function() {
+            isLinked = !isLinked;
+            this.textContent = isLinked ? 'Unlink Middle' : 'Link Middle';
+            this.classList.toggle('active');
+        };
+        document.getElementById('btnLog').onclick = function() {
+            isLogging = !isLogging;
+            this.textContent = isLogging ? 'Stop Logging' : 'Log Changes';
+            this.classList.toggle('active');
+        };
+        document.getElementById('btnPause').onclick = function() {
+            isRunning = !isRunning;
+            this.textContent = isRunning ? 'Running' : 'Paused';
+            this.classList.toggle('active');
+        };
+
+        window.addEventListener('resize', () => { initGrids(true); });
+        initGrids();
+        randomize(gridL);
+        randomize(gridR);
+        loop();
+    </script>
+</body>
+</html>
